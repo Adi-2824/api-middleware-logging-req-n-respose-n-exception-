@@ -147,7 +147,8 @@ namespace YourProjectName.Logging
                 Exception = exception != null ? FormatException(exception) : null
             };
 
-            var logText = $"{JsonSerializer.Serialize(logEntry, new JsonSerializerOptions { WriteIndented = true })}{Environment.NewLine}{'='.PadRight(100, '=')}{Environment.NewLine}";
+            var logText = $"{JsonSerializer.Serialize(logEntry, new JsonSerializerOptions { WriteIndented = true })}{Environment.NewLine}{"=
+".PadRight(100, '=')}{Environment.NewLine}";
 
             try
             {
@@ -181,7 +182,7 @@ namespace YourProjectName.Logging
                 Exception = FormatException(exception)
             };
 
-            var logText = $"{JsonSerializer.Serialize(logEntry, new JsonSerializerOptions { WriteIndented = true })}{Environment.NewLine}{'='.PadRight(100, '=')}{Environment.NewLine}";
+            var logText = $"{JsonSerializer.Serialize(logEntry, new JsonSerializerOptions { WriteIndented = true })}{Environment.NewLine}{"=".PadRight(100, '=')}{Environment.NewLine}";
 
             try
             {
@@ -313,7 +314,7 @@ namespace YourProjectName.Logging
                 }
             };
 
-            var logText = $"{JsonSerializer.Serialize(logEntry, new JsonSerializerOptions { WriteIndented = true })}{Environment.NewLine}{'='.PadRight(100, '=')}{Environment.NewLine}";
+            var logText = $"{JsonSerializer.Serialize(logEntry, new JsonSerializerOptions { WriteIndented = true })}{Environment.NewLine}{"=".PadRight(100, '=')}{Environment.NewLine}";
 
             try
             {
