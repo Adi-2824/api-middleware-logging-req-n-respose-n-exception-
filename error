@@ -1,3 +1,7 @@
 'char' does not contain a definition for 'PadRight' and no accessible extension method 'PadRight' accepting a first argument of type 'char' could be found (are you missing a using directive or an assembly reference?)
 
 in line 144,178,310
+
+
+System.InvalidOperationException: 'A suitable constructor for type 'air_reservation.ComprehensiveLoggingMiddleware' could not be located. Ensure the type is concrete and services are registered for all parameters of a public constructor.'
+
