@@ -5,3 +5,20 @@ in line 144,178,310
 
 System.InvalidOperationException: 'A suitable constructor for type 'air_reservation.ComprehensiveLoggingMiddleware' could not be located. Ensure the type is concrete and services are registered for all parameters of a public constructor.'
 
+
+
+500
+Undocumented
+Error: response status is 500
+
+Response body
+Download
+{
+  "error": {
+    "message": "An error occurred while processing your request.",
+    "requestId": "0HNEED32ALVAC:00000009",
+    "timestamp": "2025-07-29T06:26:15.2319564Z",
+    "type": "InvalidOperationException"
+  }
+}
+
