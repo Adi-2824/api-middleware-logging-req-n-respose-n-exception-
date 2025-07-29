@@ -1,0 +1,337 @@
+using Microsoft.AspNetCore.Http;
+using System;
+using System.IO;
+using System.Text;
+using System.Text.Json;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+
+namespace YourProjectName.Logging
+{
+    public class ProgressiveLoggingMiddleware
+    {
+        private readonly RequestDelegate _next;
+        private readonly string _logDirectory;
+        private readonly string _requestLogFile;
+        private readonly string _exceptionLogFile;
+
+        public ProgressiveLoggingMiddleware(RequestDelegate next)
+        {
+            _next = next;
+            _logDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
+            _requestLogFile = Path.Combine(_logDirectory, "requests.log");
+            _exceptionLogFile = Path.Combine(_logDirectory, "exceptions.log");
+            
+            if (!Directory.Exists(_logDirectory))
+            {
+                Directory.CreateDirectory(_logDirectory);
+            }
+        }
+
+        public async Task InvokeAsync(HttpContext context)
+        {
+            var startTime = DateTime.UtcNow;
+            string requestBody = string.Empty;
+            string responseBody = string.Empty;
+            
+            try
+            {
+                // Step 1: Try to capture request body safely
+                requestBody = await SafeCaptureRequestBodyAsync(context);
+                
+                // Step 2: Capture response body
+                var originalResponseBodyStream = context.Response.Body;
+                
+                using var responseBodyStream = new MemoryStream();
+                context.Response.Body = responseBodyStream;
+
+                // Step 3: Call next middleware
+                await _next(context);
+
+                // Step 4: Capture response body
+                responseBody = await SafeCaptureResponseBodyAsync(responseBodyStream);
+                
+                // Step 5: Copy response back to original stream
+                responseBodyStream.Seek(0, SeekOrigin.Begin);
+                await responseBodyStream.CopyToAsync(originalResponseBodyStream);
+
+                // Step 6: Log successful request
+                await LogRequestAsync(context, startTime, requestBody, responseBody, null);
+            }
+            catch (Exception ex)
+            {
+                // Step 7: Log exception and handle it
+                await LogExceptionAsync(context, startTime, requestBody, ex);
+                
+                // Restore original response stream before handling exception
+                context.Response.Body = context.Response.Body;
+                
+                // Only handle the response if it hasn't started
+                if (!context.Response.HasStarted)
+                {
+                    await HandleExceptionResponseAsync(context, ex);
+                }
+                else
+                {
+                    // If response has started, we can't modify it, so rethrow
+                    throw;
+                }
+            }
+        }
+
+        private async Task<string> SafeCaptureRequestBodyAsync(HttpContext context)
+        {
+            try
+            {
+                // Check if request has a body
+                if (context.Request.ContentLength == null || context.Request.ContentLength == 0)
+                {
+                    return string.Empty;
+                }
+
+                // Check if body is readable
+                if (!context.Request.Body.CanRead)
+                {
+                    return "Body not readable";
+                }
+
+                // Enable buffering
+                context.Request.EnableBuffering();
+
+                // Read with StreamReader (safer approach)
+                var body = context.Request.Body;
+                body.Seek(0, SeekOrigin.Begin);
+                
+                using var reader = new StreamReader(body, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
+                var content = await reader.ReadToEndAsync();
+                
+                // Reset position
+                body.Seek(0, SeekOrigin.Begin);
+                
+                return content;
+            }
+            catch (Exception ex)
+            {
+                return $"Error capturing request body: {ex.Message}";
+            }
+        }
+
+        private async Task<string> SafeCaptureResponseBodyAsync(MemoryStream responseBodyStream)
+        {
+            try
+            {
+                responseBodyStream.Seek(0, SeekOrigin.Begin);
+                using var reader = new StreamReader(responseBodyStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
+                return await reader.ReadToEndAsync();
+            }
+            catch (Exception ex)
+            {
+                return $"Error capturing response body: {ex.Message}";
+            }
+        }
+
+        private async Task LogRequestAsync(HttpContext context, DateTime startTime, string requestBody, string responseBody, Exception exception)
+        {
+            try
+            {
+                var duration = DateTime.UtcNow - startTime;
+                var isError = exception != null || context.Response.StatusCode >= 400;
+
+                var logEntry = new
+                {
+                    Timestamp = startTime,
+                    RequestId = context.TraceIdentifier,
+                    Request = new
+                    {
+                        Method = context.Request.Method,
+                        Path = context.Request.Path.ToString(),
+                        QueryString = context.Request.QueryString.ToString(),
+                        Headers = SafeGetHeaders(context.Request.Headers),
+                        Body = requestBody,
+                        ContentType = context.Request.ContentType ?? "N/A",
+                        ContentLength = context.Request.ContentLength
+                    },
+                    Response = new
+                    {
+                        StatusCode = context.Response.StatusCode,
+                        Headers = SafeGetHeaders(context.Response.Headers),
+                        Body = responseBody,
+                        ContentType = context.Response.ContentType ?? "N/A"
+                    },
+                    Performance = new
+                    {
+                        Duration = duration.TotalMilliseconds,
+                        DurationFormatted = $"{duration.TotalMilliseconds:F2}ms"
+                    },
+                    Client = new
+                    {
+                        IPAddress = context.Connection.RemoteIpAddress?.ToString() ?? "Unknown",
+                        UserAgent = SafeGetHeader(context.Request.Headers, "User-Agent"),
+                        Referrer = SafeGetHeader(context.Request.Headers, "Referer")
+                    },
+                    IsError = isError,
+                    Exception = exception != null ? SafeFormatException(exception) : null
+                };
+
+                var logText = $"{JsonSerializer.Serialize(logEntry, new JsonSerializerOptions { WriteIndented = true })}{Environment.NewLine}{"=".PadRight(100, '=')}{Environment.NewLine}";
+
+                await File.AppendAllTextAsync(_requestLogFile, logText);
+            }
+            catch (Exception logEx)
+            {
+                Console.WriteLine($"Failed to write request log: {logEx.Message}");
+            }
+        }
+
+        private async Task LogExceptionAsync(HttpContext context, DateTime startTime, string requestBody, Exception exception)
+        {
+            try
+            {
+                var logEntry = new
+                {
+                    Timestamp = startTime,
+                    RequestId = context.TraceIdentifier,
+                    Request = new
+                    {
+                        Method = context.Request.Method,
+                        Path = context.Request.Path.ToString(),
+                        QueryString = context.Request.QueryString.ToString(),
+                        Body = requestBody,
+                        Headers = SafeGetHeaders(context.Request.Headers)
+                    },
+                    Client = new
+                    {
+                        IPAddress = context.Connection.RemoteIpAddress?.ToString() ?? "Unknown",
+                        UserAgent = SafeGetHeader(context.Request.Headers, "User-Agent")
+                    },
+                    Exception = SafeFormatException(exception)
+                };
+
+                var logText = $"{JsonSerializer.Serialize(logEntry, new JsonSerializerOptions { WriteIndented = true })}{Environment.NewLine}{"=".PadRight(100, '=')}{Environment.NewLine}";
+
+                await File.AppendAllTextAsync(_exceptionLogFile, logText);
+            }
+            catch (Exception logEx)
+            {
+                Console.WriteLine($"Failed to write exception log: {logEx.Message}");
+            }
+        }
+
+        private async Task HandleExceptionResponseAsync(HttpContext context, Exception exception)
+        {
+            try
+            {
+                context.Response.Clear();
+                context.Response.ContentType = "application/json";
+                context.Response.StatusCode = GetStatusCodeFromException(exception);
+
+                var response = new
+                {
+                    error = new
+                    {
+                        message = "An error occurred while processing your request.",
+                        requestId = context.TraceIdentifier,
+                        timestamp = DateTime.UtcNow,
+                        type = exception.GetType().Name
+                    }
+                };
+
+                await context.Response.WriteAsync(JsonSerializer.Serialize(response));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to write exception response: {ex.Message}");
+            }
+        }
+
+        private static Dictionary<string, string> SafeGetHeaders(IHeaderDictionary headers)
+        {
+            var headerDict = new Dictionary<string, string>();
+            try
+            {
+                foreach (var header in headers)
+                {
+                    try
+                    {
+                        if (IsSensitiveHeader(header.Key))
+                            headerDict[header.Key] = "[REDACTED]";
+                        else
+                            headerDict[header.Key] = header.Value.ToString();
+                    }
+                    catch
+                    {
+                        headerDict[header.Key] = "[ERROR_READING_HEADER]";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                headerDict["ERROR"] = $"Failed to read headers: {ex.Message}";
+            }
+            return headerDict;
+        }
+
+        private static string SafeGetHeader(IHeaderDictionary headers, string headerName)
+        {
+            try
+            {
+                return headers.ContainsKey(headerName) ? headers[headerName].ToString() : "N/A";
+            }
+            catch
+            {
+                return "ERROR_READING_HEADER";
+            }
+        }
+
+        private static bool IsSensitiveHeader(string headerName)
+        {
+            var sensitiveHeaders = new[] { "authorization", "cookie", "x-api-key", "x-auth-token" };
+            return Array.Exists(sensitiveHeaders, h => h.Equals(headerName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static object SafeFormatException(Exception exception)
+        {
+            try
+            {
+                return new
+                {
+                    Type = exception.GetType().Name,
+                    Message = exception.Message,
+                    StackTrace = exception.StackTrace,
+                    Source = exception.Source,
+                    Data = exception.Data.Count > 0 ? exception.Data : null,
+                    InnerException = exception.InnerException != null ? SafeFormatException(exception.InnerException) : null
+                };
+            }
+            catch
+            {
+                return new
+                {
+                    Type = "Exception formatting error",
+                    Message = "Could not format exception details"
+                };
+            }
+        }
+
+        private static int GetStatusCodeFromException(Exception exception)
+        {
+            return exception switch
+            {
+                ArgumentException => 400,
+                UnauthorizedAccessException => 401,
+                NotImplementedException => 501,
+                TimeoutException => 408,
+                _ => 500
+            };
+        }
+    }
+
+    // Extension method
+    public static class ProgressiveLoggingExtensions
+    {
+        public static IApplicationBuilder UseProgressiveLogging(this IApplicationBuilder builder)
+        {
+            return builder.UseMiddleware<ProgressiveLoggingMiddleware>();
+        }
+    }
+}
